@@ -175,81 +175,91 @@ export class GardenDataParser {
     // 解析水体
     // parseWaters - 去除噪音点，自动闭合，设置 z = 0
     parseWaters(data) {
-        const minDistance = 0.2; // 噪音过滤阈值
+        const minDistance = 0.2;
+        const allPolygons = [];
+
+        // --- 1. 解析所有闭合多边形（不管顺序、是否岛屿） ---
         let currentPolygon = null;
-        let currentHole = null;
-        let isHole = false;
-
-        const pushPolygon = () => {
-            if (currentPolygon && currentPolygon.outer.length > 2) {
-                // 闭合主边界
-                const first = currentPolygon.outer[0];
-                const last = currentPolygon.outer[currentPolygon.outer.length - 1];
-                if (first.x !== last.x || first.y !== last.y) {
-                    currentPolygon.outer.push({ ...first });
-                }
-
-                // 闭合每个岛屿
-                currentPolygon.holes.forEach(h => {
-                    const firstH = h[0];
-                    const lastH = h[h.length - 1];
-                    if (firstH.x !== lastH.x || firstH.y !== lastH.y) h.push({ ...firstH });
-                });
-
-                this.data.waters.push(currentPolygon);
-            }
-            currentPolygon = null;
-        };
-
-        currentPolygon = { outer: [], holes: [] };
-
         for (let i = 1; i < data.length; i++) {
             const cell = data[i][0];
             if (!cell) continue;
             const cellStr = cell.toString().trim();
 
-            // 新边界或新岛屿标记
-            if (cellStr.includes('{') && cellStr.includes(';')) {
-                // 判断是否是岛屿标记，例如 "{0;a_hole}"
-                if (cellStr.includes('hole')) {
-                    isHole = true;
-                    currentHole = [];
-                } else {
-                    if (currentPolygon.outer.length > 0 || currentPolygon.holes.length > 0) pushPolygon();
-                    currentPolygon = { outer: [], holes: [] };
-                    isHole = false;
+            // 新多边形标记
+            if (cellStr.includes('{') && cellStr.includes(';') && !cellStr.includes('hole')) {
+                if (currentPolygon && currentPolygon.length > 2) {
+                    allPolygons.push(currentPolygon);
                 }
+                currentPolygon = [];
             }
-            // 坐标点
             else if (cellStr.includes('{') && cellStr.includes(',')) {
                 const coordMatch = cellStr.match(/\{([^}]+)\}/);
                 if (coordMatch) {
                     const coords = coordMatch[1].split(',').map(v => parseFloat(v.trim()));
                     if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
                         const point = { x: coords[0] / 1000, y: coords[1] / 1000, z: 0 };
-                        const lastPoint = isHole
-                            ? currentHole[currentHole.length - 1]
-                            : currentPolygon.outer[currentPolygon.outer.length - 1];
-
+                        const lastPoint = currentPolygon[currentPolygon.length - 1];
                         if (!lastPoint || Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) >= minDistance) {
-                            if (isHole) currentHole.push(point);
-                            else currentPolygon.outer.push(point);
+                            currentPolygon.push(point);
                             this.updateBounds(point);
                         }
                     }
                 }
             }
-
-            // 如果是岛屿结束标记，可以把 currentHole 推入
-            if (isHole && cellStr.includes('end_hole')) {
-                currentPolygon.holes.push(currentHole);
-                currentHole = null;
-                isHole = false;
-            }
         }
+        if (currentPolygon && currentPolygon.length > 2) allPolygons.push(currentPolygon);
 
-        // 保存最后一个水体
-        pushPolygon();
+        // --- 2. 按面积降序排列 ---
+        allPolygons.sort((a, b) => this.polygonArea(b) - this.polygonArea(a));
+
+        // --- 3. 构建 MultiPolygon，判断岛屿 ---
+        const waters = [];
+        allPolygons.forEach(poly => {
+            let assigned = false;
+            for (const water of waters) {
+                if (this.isPolygonInside(poly, water.outer)) {
+                    water.holes.push(poly);
+                    assigned = true;
+                    break;
+                }
+            }
+            if (!assigned) {
+                waters.push({ outer: poly, holes: [] });
+            }
+        });
+
+        this.data.waters = waters;
+    }
+
+    // --- 计算多边形面积 (Shoelace formula) ---
+    polygonArea(points) {
+        let area = 0;
+        for (let i = 0; i < points.length; i++) {
+            const p1 = points[i];
+            const p2 = points[(i + 1) % points.length];
+            area += (p1.x * p2.y - p2.x * p1.y);
+        }
+        return Math.abs(area) / 2;
+    }
+
+    // --- 判断多边形 A 是否完全在多边形 B 内 ---
+    isPolygonInside(inner, outer) {
+        return inner.every(p => this.pointInPolygon(p, outer));
+    }
+
+    // --- 点在多边形内 (射线法) ---
+    pointInPolygon(point, polygon) {
+        let x = point.x, y = point.y;
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+
+            const intersect = ((yi > y) !== (yj > y)) &&
+                (x < (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
     }
 
     // 更新边界
@@ -289,16 +299,10 @@ export class GardenDataParser {
         normalizePoints(this.data.rocks);
 
         // 特殊处理水体
-        this.data.waters.forEach(water => {
-            water.outer.forEach(p => {
-                p.x = (p.x - centerX) * scale;
-                p.y = (p.y - centerY) * scale;
-            });
+        (this.data.waters || []).forEach(water => {
+            water.outer.forEach(p => { p.x = (p.x - centerX) * scale; p.y = (p.y - centerY) * scale; });
             (water.holes || []).forEach(hole => {
-                hole.forEach(p => {
-                    p.x = (p.x - centerX) * scale;
-                    p.y = (p.y - centerY) * scale;
-                });
+                hole.forEach(p => { p.x = (p.x - centerX) * scale; p.y = (p.y - centerY) * scale; });
             });
         });
 

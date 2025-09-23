@@ -331,36 +331,22 @@ class GardenScene {
     });
 
     // ---------------- 水体 ----------------
-    (this.gardenData.waters || []).forEach(seg => {
-      if (seg.outer.length > 2) {
-        const shape = new THREE.Shape();
-        shape.moveTo(seg.outer[0].x, seg.outer[0].y);
-        for (let i = 1; i < seg.outer.length; i++) {
-          shape.lineTo(seg.outer[i].x, seg.outer[i].y);
-        }
-        shape.closePath();
+    (this.gardenData.waters || []).forEach(water => {
+      const shape = new THREE.Shape(water.outer.map(p => new THREE.Vector2(p.x, p.y)));
+      (water.holes || []).forEach(hole => {
+        const holePath = new THREE.Path(hole.map(p => new THREE.Vector2(p.x, p.y)));
+        shape.holes.push(holePath);
+      });
 
-        (seg.holes || []).forEach(hole => {
-          if (hole.length > 2) {
-            const holePath = new THREE.Path();
-            holePath.moveTo(hole[0].x, hole[0].y);
-            for (let i = 1; i < hole.length; i++) {
-              holePath.lineTo(hole[i].x, hole[i].y);
-            }
-            holePath.closePath();
-            shape.holes.push(holePath);
-          }
-        });
+      const geometry = new THREE.ShapeGeometry(shape);
+      const waterMesh = new THREE.Mesh(
+          geometry,
+          new THREE.MeshStandardMaterial({ color: 0x4A90E2, transparent: true, opacity: 0.6 })
+      );
 
-        const geometry = new THREE.ShapeGeometry(shape);
-        const water = new THREE.Mesh(
-            geometry,
-            new THREE.MeshStandardMaterial({ color: 0x4A90E2, transparent: true, opacity: 0.6 })
-        );
-        water.rotation.x = -Math.PI / 2; // XY -> XZ
-        water.position.y = 0.02;
-        this.scene.add(water);
-      }
+      waterMesh.rotation.x = -Math.PI/2;
+      waterMesh.position.y = 0.02;
+      this.scene.add(waterMesh);
     });
 
     // ---------------- 假山（岩石） ----------------
