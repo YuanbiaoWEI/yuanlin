@@ -19,7 +19,6 @@ export class GardenDataParser {
 
     // 解析Excel文件
     // dataParser.js 中的 parseExcelFile 函数（完整替换）
-    // dataParser.js 中的 parseExcelFile 函数（完整替换）
     async parseExcelFile(file) {
         const arrayBuffer = await file.arrayBuffer();
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
@@ -78,7 +77,7 @@ export class GardenDataParser {
     }
 
     // 解析线段坐标
-    parseLineSegments(data, targetArray) {
+    parseLineSegments(data, targetArray, layerZ = 0) {
         let currentSegment = null;
 
         for (let i = 1; i < data.length; i++) {
@@ -105,7 +104,7 @@ export class GardenDataParser {
                         const point = {
                             x: coords[0] / 1000, // 毫米转米
                             y: coords[1] / 1000,
-                            z: 0
+                            z: layerZ
                         };
 
                         if (currentSegment) {
@@ -142,7 +141,7 @@ export class GardenDataParser {
                     const plant = {
                         x: coords[0] / 1000, // 毫米转米
                         y: coords[1] / 1000,
-                        z: 0,
+                        z: 1,
                         radius: parseFloat(radiusCell) / 1000 // 冠径转米
                     };
 
@@ -155,27 +154,102 @@ export class GardenDataParser {
 
     // 解析半开放建筑
     parseSemiOpenBuildings(data) {
-        this.parseLineSegments(data, this.data.semiOpenBuildings);
+        this.parseLineSegments(data, this.data.semiOpenBuildings,1);
     }
 
     // 解析实体建筑
     parseSolidBuildings(data) {
-        this.parseLineSegments(data, this.data.solidBuildings);
+        this.parseLineSegments(data, this.data.solidBuildings, 1);
     }
 
     // 解析道路
     parseRoads(data) {
-        this.parseLineSegments(data, this.data.roads);
+        this.parseLineSegments(data, this.data.roads,0);
     }
 
     // 解析假山
     parseRocks(data) {
-        this.parseLineSegments(data, this.data.rocks);
+        this.parseLineSegments(data, this.data.rocks,0);
     }
 
     // 解析水体
+    // parseWaters - 去除噪音点，自动闭合，设置 z = 0
     parseWaters(data) {
-        this.parseLineSegments(data, this.data.waters);
+        const minDistance = 0.2; // 噪音过滤阈值
+        let currentPolygon = null;
+        let currentHole = null;
+        let isHole = false;
+
+        const pushPolygon = () => {
+            if (currentPolygon && currentPolygon.outer.length > 2) {
+                // 闭合主边界
+                const first = currentPolygon.outer[0];
+                const last = currentPolygon.outer[currentPolygon.outer.length - 1];
+                if (first.x !== last.x || first.y !== last.y) {
+                    currentPolygon.outer.push({ ...first });
+                }
+
+                // 闭合每个岛屿
+                currentPolygon.holes.forEach(h => {
+                    const firstH = h[0];
+                    const lastH = h[h.length - 1];
+                    if (firstH.x !== lastH.x || firstH.y !== lastH.y) h.push({ ...firstH });
+                });
+
+                this.data.waters.push(currentPolygon);
+            }
+            currentPolygon = null;
+        };
+
+        currentPolygon = { outer: [], holes: [] };
+
+        for (let i = 1; i < data.length; i++) {
+            const cell = data[i][0];
+            if (!cell) continue;
+            const cellStr = cell.toString().trim();
+
+            // 新边界或新岛屿标记
+            if (cellStr.includes('{') && cellStr.includes(';')) {
+                // 判断是否是岛屿标记，例如 "{0;a_hole}"
+                if (cellStr.includes('hole')) {
+                    isHole = true;
+                    currentHole = [];
+                } else {
+                    if (currentPolygon.outer.length > 0 || currentPolygon.holes.length > 0) pushPolygon();
+                    currentPolygon = { outer: [], holes: [] };
+                    isHole = false;
+                }
+            }
+            // 坐标点
+            else if (cellStr.includes('{') && cellStr.includes(',')) {
+                const coordMatch = cellStr.match(/\{([^}]+)\}/);
+                if (coordMatch) {
+                    const coords = coordMatch[1].split(',').map(v => parseFloat(v.trim()));
+                    if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+                        const point = { x: coords[0] / 1000, y: coords[1] / 1000, z: 0 };
+                        const lastPoint = isHole
+                            ? currentHole[currentHole.length - 1]
+                            : currentPolygon.outer[currentPolygon.outer.length - 1];
+
+                        if (!lastPoint || Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) >= minDistance) {
+                            if (isHole) currentHole.push(point);
+                            else currentPolygon.outer.push(point);
+                            this.updateBounds(point);
+                        }
+                    }
+                }
+            }
+
+            // 如果是岛屿结束标记，可以把 currentHole 推入
+            if (isHole && cellStr.includes('end_hole')) {
+                currentPolygon.holes.push(currentHole);
+                currentHole = null;
+                isHole = false;
+            }
+        }
+
+        // 保存最后一个水体
+        pushPolygon();
     }
 
     // 更新边界
@@ -213,7 +287,20 @@ export class GardenDataParser {
         normalizePoints(this.data.solidBuildings);
         normalizePoints(this.data.roads);
         normalizePoints(this.data.rocks);
-        normalizePoints(this.data.waters);
+
+        // 特殊处理水体
+        this.data.waters.forEach(water => {
+            water.outer.forEach(p => {
+                p.x = (p.x - centerX) * scale;
+                p.y = (p.y - centerY) * scale;
+            });
+            (water.holes || []).forEach(hole => {
+                hole.forEach(p => {
+                    p.x = (p.x - centerX) * scale;
+                    p.y = (p.y - centerY) * scale;
+                });
+            });
+        });
 
         // 归一化植物坐标
         this.data.plants.forEach(plant => {

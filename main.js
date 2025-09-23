@@ -53,8 +53,8 @@ class GardenScene {
     this.setupLighting();
 
     // 坐标轴辅助
-    const axesHelper = new THREE.AxesHelper(50);
-    this.scene.add(axesHelper);
+    //const axesHelper = new THREE.AxesHelper(50);
+    //this.scene.add(axesHelper);
 
     // 窗口自适应
     window.addEventListener('resize', () => this.onWindowResize(), false);
@@ -332,20 +332,33 @@ class GardenScene {
 
     // ---------------- 水体 ----------------
     (this.gardenData.waters || []).forEach(seg => {
-      if (seg.points.length > 2) {
+      if (seg.outer.length > 2) {
         const shape = new THREE.Shape();
-        shape.moveTo(seg.points[0].x, -seg.points[0].y);
-        for (let i = 1; i < seg.points.length; i++) {
-          shape.lineTo(seg.points[i].x, seg.points[i].y);
+        shape.moveTo(seg.outer[0].x, seg.outer[0].y);
+        for (let i = 1; i < seg.outer.length; i++) {
+          shape.lineTo(seg.outer[i].x, seg.outer[i].y);
         }
         shape.closePath();
+
+        (seg.holes || []).forEach(hole => {
+          if (hole.length > 2) {
+            const holePath = new THREE.Path();
+            holePath.moveTo(hole[0].x, hole[0].y);
+            for (let i = 1; i < hole.length; i++) {
+              holePath.lineTo(hole[i].x, hole[i].y);
+            }
+            holePath.closePath();
+            shape.holes.push(holePath);
+          }
+        });
+
         const geometry = new THREE.ShapeGeometry(shape);
         const water = new THREE.Mesh(
             geometry,
             new THREE.MeshStandardMaterial({ color: 0x4A90E2, transparent: true, opacity: 0.6 })
         );
-        water.rotation.x = -Math.PI / 2;
-        water.position.y = 0.02; // 稍微抬高避免与地面 Z-fighting
+        water.rotation.x = -Math.PI / 2; // XY -> XZ
+        water.position.y = 0.02;
         this.scene.add(water);
       }
     });
