@@ -246,7 +246,7 @@ class GardenScene {
     // ---------------- 建筑（实体） ----------------
     (this.gardenData.solidBuildings || []).forEach(seg => {
       seg.points.forEach(p => {
-        const geometry = new THREE.BoxGeometry(4, 4, 4);
+        const geometry = new THREE.CylinderGeometry(0.5, 0.5,4,32,1);
         const material = new THREE.MeshStandardMaterial({ color: 0xf5f5dc });
 
         // BoxGeometry 默认有 6 个面，每个面 2 个三角形
@@ -288,7 +288,7 @@ class GardenScene {
         const length = Math.sqrt(dx * dx + dz * dz);
         if (length <= 0.01) continue;
 
-        const wallHeight = 3;
+        const wallHeight = 1;
         const wallThickness = 0.3;
 
         const geometry = new THREE.BoxGeometry(length, wallHeight, wallThickness);
