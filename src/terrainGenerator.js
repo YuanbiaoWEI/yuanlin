@@ -1,113 +1,214 @@
-// 地形生成器
+// terrainGenerator.js - 生成园林地形
 import * as THREE from 'three';
+import Delaunator from 'delaunator';
 
-class TerrainGenerator {
-    constructor(bounds, resolution = 1) {
+export class TerrainGenerator {
+    constructor(bounds, resolution = 2) {
         this.bounds = bounds;
-        this.resolution = resolution; // 地形网格分辨率
+        this.resolution = resolution; // 网格分辨率（米）
+        this.maxHeight = 5; // 最大高度（米）
         this.heightMap = [];
-        this.waterBodies = [];
-        this.maxHeight = 5; // 最大高度
-        this.falloffDistance = 30; // 高度衰减距离
+        this.points = [];
+        this.triangles = [];
     }
 
-    // 生成地形高度图
-    generateHeightMap(waterAreas) {
-        this.waterBodies = waterAreas;
+    // 生成地形
+    generate(waterBodies, rockAreas) {
+        // 生成网格点
+        this.generateGridPoints();
 
-        const width = Math.ceil((this.bounds.maxX - this.bounds.minX) / this.resolution);
-        const height = Math.ceil((this.bounds.maxY - this.bounds.minY) / this.resolution);
+        // 计算高度图
+        this.calculateHeightMap(waterBodies, rockAreas);
 
+        // 三角剖分
+        this.triangulate();
+
+        // 创建地形几何体
+        return this.createTerrainGeometry();
+    }
+
+    // 生成网格点
+    generateGridPoints() {
+        const width = this.bounds.max.x - this.bounds.min.x;
+        const height = this.bounds.max.y - this.bounds.min.y;
+        const cols = Math.ceil(width / this.resolution);
+        const rows = Math.ceil(height / this.resolution);
+
+        this.points = [];
         this.heightMap = [];
 
-        for (let y = 0; y < height; y++) {
-            const row = [];
-            for (let x = 0; x < width; x++) {
-                const worldX = this.bounds.minX + x * this.resolution;
-                const worldY = this.bounds.minY + y * this.resolution;
+        for (let row = 0; row <= rows; row++) {
+            for (let col = 0; col <= cols; col++) {
+                const x = this.bounds.min.x + col * this.resolution;
+                const y = this.bounds.min.y + row * this.resolution;
+                this.points.push([x, y]);
+                this.heightMap.push(0);
+            }
+        }
+    }
 
-                // 计算到最近水体的距离
-                const distanceToWater = this.getDistanceToWater(worldX, worldY);
+    // 计算高度图
+    calculateHeightMap(waterBodies, rockAreas) {
+        for (let i = 0; i < this.points.length; i++) {
+            const [x, y] = this.points[i];
+            let height = 0;
 
-                // 根据距离计算高度
-                let elevation = 0;
-                if (distanceToWater > 0) {
-                    // 使用平滑的高度过渡
-                    elevation = Math.min(this.maxHeight,
-                        this.maxHeight * Math.pow(distanceToWater / this.falloffDistance, 0.5));
+            // 计算到最近水体的距离
+            let minWaterDistance = Infinity;
+            waterBodies.forEach(water => {
+                water.points.forEach((point, idx) => {
+                    if (idx < water.points.length - 1) {
+                        const dist = this.pointToLineDistance(
+                            { x, y },
+                            water.points[idx],
+                            water.points[idx + 1]
+                        );
+                        minWaterDistance = Math.min(minWaterDistance, dist);
+                    }
+                });
+            });
 
-                    // 添加一些噪声使地形更自然
-                    elevation += this.noise(worldX * 0.05, worldY * 0.05) * 0.5;
+            // 基础高度：距离水体越远越高
+            if (minWaterDistance < Infinity) {
+                height = Math.min(minWaterDistance * 0.02, this.maxHeight * 0.5);
+            }
+
+            // 山体区域增加高度和扰动
+            let nearRock = false;
+            rockAreas.forEach(rock => {
+                if (this.isPointInPolygon({ x, y }, rock.points)) {
+                    nearRock = true;
+                    // 添加随机扰动形成自然起伏
+                    height += this.maxHeight * 0.3 + Math.random() * this.maxHeight * 0.4;
                 }
+            });
 
-                row.push(elevation);
-            }
-            this.heightMap.push(row);
+            // 添加柏林噪声使地形更自然
+            height += this.perlinNoise(x * 0.05, y * 0.05) * 0.5;
+
+            // 确保水体区域高度为0
+            let inWater = false;
+            waterBodies.forEach(water => {
+                if (this.isPointInPolygon({ x, y }, water.points)) {
+                    inWater = true;
+                    height = 0;
+                }
+            });
+
+            this.heightMap[i] = Math.max(0, height);
+        }
+    }
+
+    // 三角剖分
+    triangulate() {
+        const delaunay = Delaunator.from(this.points);
+        this.triangles = delaunay.triangles;
+    }
+
+    // 创建地形几何体
+    createTerrainGeometry() {
+        const geometry = new THREE.BufferGeometry();
+
+        // 顶点数组
+        const vertices = [];
+        const normals = [];
+        const uvs = [];
+
+        // 添加所有顶点
+        for (let i = 0; i < this.points.length; i++) {
+            const [x, y] = this.points[i];
+            const z = this.heightMap[i];
+            vertices.push(x, z, y); // 注意：Three.js使用Y轴作为高度
+
+            // UV坐标
+            const u = (x - this.bounds.min.x) / (this.bounds.max.x - this.bounds.min.x);
+            const v = (y - this.bounds.min.y) / (this.bounds.max.y - this.bounds.min.y);
+            uvs.push(u * 10, v * 10); // 重复贴图
         }
 
-        // 平滑高度图
-        this.smoothHeightMap(2);
+        // 计算法线
+        const tempNormals = new Array(vertices.length).fill(0);
+        for (let i = 0; i < this.triangles.length; i += 3) {
+            const a = this.triangles[i];
+            const b = this.triangles[i + 1];
+            const c = this.triangles[i + 2];
 
-        return this.heightMap;
-    }
-
-    // 计算点到最近水体的距离
-    getDistanceToWater(x, y) {
-        let minDistance = Infinity;
-
-        this.waterBodies.forEach(water => {
-            if (this.isPointInPolygon(x, y, water.coordinates)) {
-                minDistance = 0;
-                return;
-            }
-
-            const distance = this.getDistanceToPolygon(x, y, water.coordinates);
-            minDistance = Math.min(minDistance, distance);
-        });
-
-        return minDistance;
-    }
-
-    // 判断点是否在多边形内
-    isPointInPolygon(x, y, polygon) {
-        let inside = false;
-
-        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-            const xi = polygon[i][0], yi = polygon[i][1];
-            const xj = polygon[j][0], yj = polygon[j][1];
-
-            const intersect = ((yi > y) !== (yj > y))
-                && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-
-            if (intersect) inside = !inside;
-        }
-
-        return inside;
-    }
-
-    // 计算点到多边形的最短距离
-    getDistanceToPolygon(x, y, polygon) {
-        let minDistance = Infinity;
-
-        for (let i = 0; i < polygon.length; i++) {
-            const j = (i + 1) % polygon.length;
-            const distance = this.pointToLineDistance(
-                x, y,
-                polygon[i][0], polygon[i][1],
-                polygon[j][0], polygon[j][1]
+            // 计算三角形法线
+            const v1 = new THREE.Vector3(
+                vertices[a * 3] - vertices[b * 3],
+                vertices[a * 3 + 1] - vertices[b * 3 + 1],
+                vertices[a * 3 + 2] - vertices[b * 3 + 2]
             );
-            minDistance = Math.min(minDistance, distance);
+            const v2 = new THREE.Vector3(
+                vertices[c * 3] - vertices[b * 3],
+                vertices[c * 3 + 1] - vertices[b * 3 + 1],
+                vertices[c * 3 + 2] - vertices[b * 3 + 2]
+            );
+            const normal = v1.cross(v2).normalize();
+
+            // 累加到顶点法线
+            tempNormals[a * 3] += normal.x;
+            tempNormals[a * 3 + 1] += normal.y;
+            tempNormals[a * 3 + 2] += normal.z;
+            tempNormals[b * 3] += normal.x;
+            tempNormals[b * 3 + 1] += normal.y;
+            tempNormals[b * 3 + 2] += normal.z;
+            tempNormals[c * 3] += normal.x;
+            tempNormals[c * 3 + 1] += normal.y;
+            tempNormals[c * 3 + 2] += normal.z;
         }
 
-        return minDistance;
+        // 归一化法线
+        for (let i = 0; i < tempNormals.length; i += 3) {
+            const len = Math.sqrt(
+                tempNormals[i] ** 2 +
+                tempNormals[i + 1] ** 2 +
+                tempNormals[i + 2] ** 2
+            );
+            if (len > 0) {
+                normals.push(
+                    tempNormals[i] / len,
+                    tempNormals[i + 1] / len,
+                    tempNormals[i + 2] / len
+                );
+            } else {
+                normals.push(0, 1, 0);
+            }
+        }
+
+        // 设置几何体属性
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        geometry.setIndex(this.triangles);
+
+        return geometry;
+    }
+
+    // 获取指定位置的高度
+    getHeightAt(x, y) {
+        // 找到最近的网格点
+        let minDist = Infinity;
+        let nearestHeight = 0;
+
+        for (let i = 0; i < this.points.length; i++) {
+            const [px, py] = this.points[i];
+            const dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
+            if (dist < minDist) {
+                minDist = dist;
+                nearestHeight = this.heightMap[i];
+            }
+        }
+
+        return nearestHeight;
     }
 
     // 点到线段的距离
-    pointToLineDistance(px, py, x1, y1, x2, y2) {
-        const A = px - x1;
-        const B = py - y1;
-        const C = x2 - x1;
-        const D = y2 - y1;
+    pointToLineDistance(point, lineStart, lineEnd) {
+        const A = point.x - lineStart.x;
+        const B = point.y - lineStart.y;
+        const C = lineEnd.x - lineStart.x;
+        const D = lineEnd.y - lineStart.y;
 
         const dot = A * C + B * D;
         const lenSq = C * C + D * D;
@@ -120,144 +221,39 @@ class TerrainGenerator {
         let xx, yy;
 
         if (param < 0) {
-            xx = x1;
-            yy = y1;
+            xx = lineStart.x;
+            yy = lineStart.y;
         } else if (param > 1) {
-            xx = x2;
-            yy = y2;
+            xx = lineEnd.x;
+            yy = lineEnd.y;
         } else {
-            xx = x1 + param * C;
-            yy = y1 + param * D;
+            xx = lineStart.x + param * C;
+            yy = lineStart.y + param * D;
         }
 
-        const dx = px - xx;
-        const dy = py - yy;
-
+        const dx = point.x - xx;
+        const dy = point.y - yy;
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    // 简单的噪声函数
-    noise(x, y) {
+    // 判断点是否在多边形内
+    isPointInPolygon(point, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+
+            const intersect = ((yi > point.y) !== (yj > point.y))
+                && (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    // 简单的柏林噪声实现
+    perlinNoise(x, y) {
+        // 简化的噪声函数
         const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
         return (n - Math.floor(n)) * 2 - 1;
     }
-
-    // 平滑高度图
-    smoothHeightMap(iterations = 1) {
-        for (let iter = 0; iter < iterations; iter++) {
-            const newHeightMap = [];
-
-            for (let y = 0; y < this.heightMap.length; y++) {
-                const row = [];
-                for (let x = 0; x < this.heightMap[y].length; x++) {
-                    let sum = 0;
-                    let count = 0;
-
-                    // 3x3卷积核
-                    for (let dy = -1; dy <= 1; dy++) {
-                        for (let dx = -1; dx <= 1; dx++) {
-                            const ny = y + dy;
-                            const nx = x + dx;
-
-                            if (ny >= 0 && ny < this.heightMap.length &&
-                                nx >= 0 && nx < this.heightMap[ny].length) {
-                                const weight = (dx === 0 && dy === 0) ? 2 : 1;
-                                sum += this.heightMap[ny][nx] * weight;
-                                count += weight;
-                            }
-                        }
-                    }
-
-                    row.push(sum / count);
-                }
-                newHeightMap.push(row);
-            }
-
-            this.heightMap = newHeightMap;
-        }
-    }
-
-    // 创建地形网格
-    createTerrainMesh(materialOptions = {}) {
-        if (!this.heightMap || this.heightMap.length === 0) {
-            console.warn('高度图未生成');
-            return null;
-        }
-
-        const width = this.heightMap[0].length;
-        const height = this.heightMap.length;
-
-        // 创建平面几何体
-        const geometry = new THREE.PlaneGeometry(
-            (this.bounds.maxX - this.bounds.minX),
-            (this.bounds.maxY - this.bounds.minY),
-            width - 1,
-            height - 1
-        );
-
-        // 应用高度图到顶点
-        const vertices = geometry.attributes.position.array;
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const index = (y * width + x) * 3;
-                vertices[index + 2] = this.heightMap[y][x]; // 设置Z坐标（高度）
-            }
-        }
-
-        // 重新计算法线
-        geometry.computeVertexNormals();
-        geometry.attributes.position.needsUpdate = true;
-
-        // 创建材质
-        const material = new THREE.MeshStandardMaterial({
-            color: materialOptions.color || 0x8FBC8F,
-            roughness: materialOptions.roughness || 0.8,
-            metalness: materialOptions.metalness || 0.2,
-            wireframe: materialOptions.wireframe || false,
-            side: THREE.DoubleSide
-        });
-
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.rotation.x = -Math.PI / 2;
-        mesh.position.set(
-            (this.bounds.minX + this.bounds.maxX) / 2,
-            0,
-            (this.bounds.minY + this.bounds.maxY) / 2
-        );
-        mesh.receiveShadow = true;
-        mesh.castShadow = true;
-
-        return mesh;
-    }
-
-    // 获取特定位置的高度
-    getHeightAt(x, y) {
-        if (!this.heightMap || this.heightMap.length === 0) return 0;
-
-        // 转换世界坐标到高度图索引
-        const gridX = Math.floor((x - this.bounds.minX) / this.resolution);
-        const gridY = Math.floor((y - this.bounds.minY) / this.resolution);
-
-        // 边界检查
-        if (gridX < 0 || gridX >= this.heightMap[0].length - 1 ||
-            gridY < 0 || gridY >= this.heightMap.length - 1) {
-            return 0;
-        }
-
-        // 双线性插值获得平滑的高度
-        const fx = (x - this.bounds.minX) / this.resolution - gridX;
-        const fy = (y - this.bounds.minY) / this.resolution - gridY;
-
-        const h00 = this.heightMap[gridY][gridX];
-        const h10 = this.heightMap[gridY][gridX + 1];
-        const h01 = this.heightMap[gridY + 1][gridX];
-        const h11 = this.heightMap[gridY + 1][gridX + 1];
-
-        const h0 = h00 * (1 - fx) + h10 * fx;
-        const h1 = h01 * (1 - fx) + h11 * fx;
-
-        return h0 * (1 - fy) + h1 * fy;
-    }
 }
-
-export default TerrainGenerator;

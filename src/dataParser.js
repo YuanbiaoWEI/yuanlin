@@ -1,231 +1,231 @@
-// 园林数据解析器
-import * as turf from '@turf/turf';
+// dataParser.js - 解析园林Excel数据
 import * as XLSX from 'xlsx';
 
-class GardenDataParser {
+export class GardenDataParser {
     constructor() {
-        this.layers = {
-            buildings: [],      // 建筑
-            semiOpenBuildings: [], // 半开放建筑
-            roads: [],         // 道路
-            waters: [],        // 水体
-            rocks: [],         // 山石
-            plants: []         // 植物
+        this.data = {
+            semiOpenBuildings: [],
+            solidBuildings: [],
+            roads: [],
+            rocks: [],
+            waters: [],
+            plants: []
         };
-        this.bounds = null;
-        this.center = null;
+        this.bounds = {
+            min: { x: Infinity, y: Infinity },
+            max: { x: -Infinity, y: -Infinity }
+        };
     }
 
-    // 解析 GeoJSON 数据
-    parseGeoJSON(geojsonData) {
-        const features = geojsonData.features || [];
+    // 解析Excel文件
+    // dataParser.js 中的 parseExcelFile 函数（完整替换）
+    // dataParser.js 中的 parseExcelFile 函数（完整替换）
+    async parseExcelFile(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
 
-        features.forEach(feature => {
-            const layer = feature.properties?.layer || 'unknown';
-            const geometry = feature.geometry;
+        // 重置数据和边界（防止重复调用残留）
+        this.data = {
+            semiOpenBuildings: [],
+            solidBuildings: [],
+            roads: [],
+            rocks: [],
+            waters: [],
+            plants: []
+        };
+        this.bounds = {
+            min: { x: Infinity, y: Infinity },
+            max: { x: -Infinity, y: -Infinity }
+        };
 
-            switch(layer.toLowerCase()) {
-                case 'building':
-                case '实体建筑':
-                    this.layers.buildings.push(this.processFeature(feature));
-                    break;
-                case 'semi_open_building':
+        // 解析各个工作表
+        workbook.SheetNames.forEach(sheetName => {
+            const worksheet = workbook.Sheets[sheetName];
+            const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+            switch(sheetName) {
                 case '半开放建筑':
-                    this.layers.semiOpenBuildings.push(this.processFeature(feature));
+                    this.parseSemiOpenBuildings(data);
                     break;
-                case 'road':
+                case '实体建筑':
+                    this.parseSolidBuildings(data);
+                    break;
                 case '道路':
-                    this.layers.roads.push(this.processFeature(feature));
+                    this.parseRoads(data);
                     break;
-                case 'water':
+                case '假山':
+                    this.parseRocks(data);
+                    break;
                 case '水体':
-                    this.layers.waters.push(this.processFeature(feature));
+                    this.parseWaters(data);
                     break;
-                case 'rock':
-                case '山石':
-                    this.layers.rocks.push(this.processFeature(feature));
-                    break;
-                case 'plant':
                 case '植物':
-                    this.layers.plants.push(this.processFeature(feature));
+                    this.parsePlants(data);
+                    break;
+                default:
+                    // 其他 sheet 名称暂时忽略
                     break;
             }
         });
 
-        this.calculateBounds();
-        return this.layers;
+        // 归一化坐标（会更新 this.bounds）
+        this.normalizeCoordinates();
+
+        // 把 bounds 写回到返回对象，这样 main.js 可以直接读取到 bounds（避免 NaN）
+        this.data.bounds = this.bounds;
+
+        return this.data;
     }
 
-    // 处理单个要素
-    processFeature(feature) {
-        const coords = this.extractCoordinates(feature.geometry);
-        const properties = feature.properties || {};
+    // 解析线段坐标
+    parseLineSegments(data, targetArray) {
+        let currentSegment = null;
 
-        return {
-            type: feature.geometry.type,
-            coordinates: coords,
-            properties: properties,
-            centroid: this.calculateCentroid(coords),
-            area: this.calculateArea(feature)
-        };
-    }
+        for (let i = 1; i < data.length; i++) {
+            const cell = data[i][0];
+            if (!cell) continue;
 
-    // 提取坐标
-    extractCoordinates(geometry) {
-        if (geometry.type === 'Point') {
-            return [geometry.coordinates];
-        } else if (geometry.type === 'LineString') {
-            return geometry.coordinates;
-        } else if (geometry.type === 'Polygon') {
-            return geometry.coordinates[0]; // 只取外环
-        } else if (geometry.type === 'MultiPolygon') {
-            return geometry.coordinates[0][0]; // 简化处理，只取第一个多边形的外环
-        }
-        return [];
-    }
+            const cellStr = cell.toString().trim();
 
-    // 计算质心
-    calculateCentroid(coords) {
-        if (coords.length === 0) return [0, 0];
-
-        const x = coords.reduce((sum, c) => sum + c[0], 0) / coords.length;
-        const y = coords.reduce((sum, c) => sum + c[1], 0) / coords.length;
-        return [x, y];
-    }
-
-    // 计算面积
-    calculateArea(feature) {
-        if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
-            return turf.area(feature);
-        }
-        return 0;
-    }
-
-    // 计算边界
-    calculateBounds() {
-        const allCoords = [];
-
-        Object.values(this.layers).forEach(layer => {
-            layer.forEach(item => {
-                allCoords.push(...item.coordinates);
-            });
-        });
-
-        if (allCoords.length === 0) return;
-
-        const minX = Math.min(...allCoords.map(c => c[0]));
-        const maxX = Math.max(...allCoords.map(c => c[0]));
-        const minY = Math.min(...allCoords.map(c => c[1]));
-        const maxY = Math.max(...allCoords.map(c => c[1]));
-
-        this.bounds = { minX, maxX, minY, maxY };
-        this.center = [(minX + maxX) / 2, (minY + maxY) / 2];
-    }
-
-    // 从Excel坐标数据解析（针对你提供的数据格式）
-    parseExcelCoordinates(workbook) {
-        // 解析每个工作表的坐标数据
-        const sheetMap = {
-            '半开放建筑': 'semiOpenBuildings',
-            '实体建筑': 'buildings',
-            '道路': 'roads',
-            '假山': 'rocks',
-            '水体': 'waters',
-            '植物': 'plants'
-        };
-
-        for (const sheetName in sheetMap) {
-            if (workbook.SheetNames.includes(sheetName)) {
-                const worksheet = workbook.Sheets[sheetName];
-                const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-                if (sheetName === '植物') {
-                    this.parsePlantsData(data, sheetMap[sheetName]);
-                } else {
-                    this.parseCoordinateData(data, sheetMap[sheetName]);
+            // 检查是否是新线段标记
+            if (cellStr.includes('{') && cellStr.includes(';')) {
+                // 保存上一个线段
+                if (currentSegment && currentSegment.points.length > 0) {
+                    targetArray.push(currentSegment);
                 }
-            }
-        }
-
-        this.calculateBounds();
-        return this.layers;
-    }
-
-    // 解析坐标数据（建筑、道路、水体等）
-    parseCoordinateData(data, layerName) {
-        const lines = [];
-        let currentLine = [];
-
-        data.forEach(row => {
-            // 跳过标题行
-            if (row[0] === '区分线段的点位坐标') return;
-
-            // 检查是否为新线段标记
-            if (typeof row[0] === 'string' && row[0].includes('{0;')) {
-                if (currentLine.length > 0) {
-                    lines.push(currentLine);
-                }
-                currentLine = [];
+                // 开始新线段
+                currentSegment = { points: [] };
             }
             // 解析坐标点
-            else if (typeof row[0] === 'string' && row[0].includes('{')) {
-                const match = row[0].match(/\{(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\}/);
-                if (match) {
-                    const x = parseFloat(match[1]) / 1000; // 毫米转米
-                    const y = parseFloat(match[2]) / 1000;
-                    currentLine.push([x, y]);
+            else if (cellStr.includes('{') && cellStr.includes(',')) {
+                const coordMatch = cellStr.match(/\{([^}]+)\}/);
+                if (coordMatch) {
+                    const coords = coordMatch[1].split(',').map(v => parseFloat(v.trim()));
+                    if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+                        const point = {
+                            x: coords[0] / 1000, // 毫米转米
+                            y: coords[1] / 1000,
+                            z: 0
+                        };
+
+                        if (currentSegment) {
+                            currentSegment.points.push(point);
+                        }
+
+                        // 更新边界
+                        this.updateBounds(point);
+                    }
                 }
             }
-        });
-
-        // 添加最后一条线段
-        if (currentLine.length > 0) {
-            lines.push(currentLine);
         }
 
-        // 将线段添加到对应图层
-        lines.forEach(line => {
-            if (line.length >= 2) {
-                this.layers[layerName].push({
-                    type: 'LineString',
-                    coordinates: line,
-                    properties: { source: layerName },
-                    centroid: this.calculateCentroid(line),
-                    area: 0
-                });
-            }
-        });
+        // 保存最后一个线段
+        if (currentSegment && currentSegment.points.length > 0) {
+            targetArray.push(currentSegment);
+        }
     }
 
     // 解析植物数据
-    parsePlantsData(data, layerName) {
-        data.forEach((row, index) => {
-            // 跳过标题行
-            if (index === 0) return;
+    parsePlants(data) {
+        for (let i = 1; i < data.length; i++) {
+            const coordCell = data[i][0];
+            const radiusCell = data[i][1];
 
-            // 解析植物中心坐标和冠径
-            if (row[0] && typeof row[0] === 'string' && row[0].includes('{')) {
-                const centerMatch = row[0].match(/\{(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\}/);
-                const radius = row[1] ? parseFloat(row[1]) / 1000 : 1; // 默认半径1米
+            if (!coordCell || radiusCell === undefined) continue;
 
-                if (centerMatch) {
-                    const x = parseFloat(centerMatch[1]) / 1000;
-                    const y = parseFloat(centerMatch[2]) / 1000;
+            const coordStr = coordCell.toString().trim();
+            const coordMatch = coordStr.match(/\{([^}]+)\}/);
 
-                    this.layers[layerName].push({
-                        type: 'Point',
-                        coordinates: [[x, y]],
-                        properties: {
-                            source: layerName,
-                            radius: radius
-                        },
-                        centroid: [x, y],
-                        area: Math.PI * radius * radius
-                    });
+            if (coordMatch) {
+                const coords = coordMatch[1].split(',').map(v => parseFloat(v.trim()));
+                if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+                    const plant = {
+                        x: coords[0] / 1000, // 毫米转米
+                        y: coords[1] / 1000,
+                        z: 0,
+                        radius: parseFloat(radiusCell) / 1000 // 冠径转米
+                    };
+
+                    this.data.plants.push(plant);
+                    this.updateBounds(plant);
                 }
             }
+        }
+    }
+
+    // 解析半开放建筑
+    parseSemiOpenBuildings(data) {
+        this.parseLineSegments(data, this.data.semiOpenBuildings);
+    }
+
+    // 解析实体建筑
+    parseSolidBuildings(data) {
+        this.parseLineSegments(data, this.data.solidBuildings);
+    }
+
+    // 解析道路
+    parseRoads(data) {
+        this.parseLineSegments(data, this.data.roads);
+    }
+
+    // 解析假山
+    parseRocks(data) {
+        this.parseLineSegments(data, this.data.rocks);
+    }
+
+    // 解析水体
+    parseWaters(data) {
+        this.parseLineSegments(data, this.data.waters);
+    }
+
+    // 更新边界
+    updateBounds(point) {
+        this.bounds.min.x = Math.min(this.bounds.min.x, point.x);
+        this.bounds.min.y = Math.min(this.bounds.min.y, point.y);
+        this.bounds.max.x = Math.max(this.bounds.max.x, point.x);
+        this.bounds.max.y = Math.max(this.bounds.max.y, point.y);
+    }
+
+    // 归一化坐标到合理范围
+    normalizeCoordinates() {
+        const width = this.bounds.max.x - this.bounds.min.x;
+        const height = this.bounds.max.y - this.bounds.min.y;
+        const centerX = (this.bounds.min.x + this.bounds.max.x) / 2;
+        const centerY = (this.bounds.min.y + this.bounds.max.y) / 2;
+
+        // 缩放到目标大小（例如 200x200 米）
+        const targetSize = 200;
+        const scale = targetSize / Math.max(width, height);
+
+        // 归一化所有坐标
+        const normalizePoints = (segments) => {
+            segments.forEach(segment => {
+                if (segment.points) {
+                    segment.points.forEach(point => {
+                        point.x = (point.x - centerX) * scale;
+                        point.y = (point.y - centerY) * scale;
+                    });
+                }
+            });
+        };
+
+        normalizePoints(this.data.semiOpenBuildings);
+        normalizePoints(this.data.solidBuildings);
+        normalizePoints(this.data.roads);
+        normalizePoints(this.data.rocks);
+        normalizePoints(this.data.waters);
+
+        // 归一化植物坐标
+        this.data.plants.forEach(plant => {
+            plant.x = (plant.x - centerX) * scale;
+            plant.y = (plant.y - centerY) * scale;
+            plant.radius = plant.radius * scale;
         });
+
+        // 更新边界
+        this.bounds = {
+            min: { x: -targetSize/2, y: -targetSize/2 },
+            max: { x: targetSize/2, y: targetSize/2 }
+        };
     }
 }
-
-export default GardenDataParser;

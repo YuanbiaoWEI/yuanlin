@@ -9,9 +9,8 @@
   },
   "dependencies": {
     "three": "^0.158.0",
-    "dxf-parser": "^1.0.0",
-    "@turf/turf": "^6.5.0",
     "earcut": "^2.2.4",
+    "delaunator": "^5.0.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
