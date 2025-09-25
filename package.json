@@ -8,9 +8,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "three": "^0.158.0",
-    "earcut": "^2.2.4",
+    "@turf/turf": "^7.2.0",
     "delaunator": "^5.0.0",
+    "earcut": "^2.2.4",
+    "three": "^0.158.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

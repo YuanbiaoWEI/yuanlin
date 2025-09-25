@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GardenDataParser } from './src/dataParser.js';
+import { RoutePlanner } from './src/RoutePlanner.js';
+
 
 class GardenScene {
   constructor() {
@@ -192,6 +194,7 @@ class GardenScene {
 
   async handleFileUpload(event) {
     const file = event.target.files[0];
+
     if (!file) return;
 
     this.updateStatus('正在解析Excel数据...');
@@ -210,6 +213,26 @@ class GardenScene {
       console.error(err);
       this.updateStatus('Excel 加载失败: ' + err.message);
     }
+
+    //p1
+    const planner = new RoutePlanner(this.gardenData);
+    const result  = planner.findOptimalRoute();
+    if (!result.path) {
+      alert('未找到可用游线');
+      return;
+    }
+    console.log('最佳游线得分:', result.score);
+
+    // 绘制立体高亮线路
+    RoutePlanner.drawTubeRoute(this.scene, result.path);
+  }
+
+  drawOptimalRoute(path){
+    const mat = new THREE.LineBasicMaterial({color:0xff0000, linewidth:3});
+    const pts = path.map(p=>new THREE.Vector3(p.x,0.3,-p.y));
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    const line = new THREE.Line(geom, mat);
+    this.scene.add(line);
   }
 
   clearScene() {
